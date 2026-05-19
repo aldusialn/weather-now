@@ -18,7 +18,7 @@ interface HexWeather {
   intervals: { time: string; precipProbability: number; precipIntensity: number }[]
 }
 
-const H3_RESOLUTION = 8
+const H3_RESOLUTION = 7
 const MAX_SELECTED = 5
 
 function getViewportHexagons(bounds: {
@@ -79,37 +79,6 @@ export default function RainMap() {
       .catch(() => { setLocation({ lat: 39.5, lon: -98.35, city: 'United States' }); setLoading(false) })
   }, [])
 
-  // Load from localStorage on mount
-  useEffect(() => {
-    try {
-      const saved = localStorage.getItem('selectedHexes')
-      if (saved) {
-        const parsed: string[] = JSON.parse(saved)
-        setSelectedHexes(new Set(parsed))
-      }
-    } catch {}
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Save to localStorage whenever selection changes
-  useEffect(() => {
-    try {
-      localStorage.setItem('selectedHexes', JSON.stringify(Array.from(selectedHexes)))
-    } catch {}
-  }, [selectedHexes])
-
-  const updateHexes = useCallback(() => {
-    if (!mapRef.current) return
-    const map = mapRef.current.getMap()
-    const bounds = map.getBounds()
-    const hexes = getViewportHexagons({
-      north: bounds.getNorth(),
-      south: bounds.getSouth(),
-      east: bounds.getEast(),
-      west: bounds.getWest(),
-    })
-    setHexIds(hexes)
-  }, [])
-
   const fetchWeather = useCallback(async (hexId: string, lat: number, lon: number) => {
     setHexWeather(prev => ({
       ...prev,
@@ -129,6 +98,41 @@ export default function RainMap() {
         [hexId]: { hexId, loading: false, error: true, intervals: [] }
       }))
     }
+  }, [])
+
+  // Load from localStorage on mount and fetch weather for restored hexes
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('selectedHexes')
+      if (saved) {
+        const parsed: string[] = JSON.parse(saved)
+        setSelectedHexes(new Set(parsed))
+        parsed.forEach(hexId => {
+          const [lat, lon] = cellToLatLng(hexId)
+          fetchWeather(hexId, lat, lon)
+        })
+      }
+    } catch {}
+  }, [fetchWeather])
+
+  // Save to localStorage whenever selection changes
+  useEffect(() => {
+    try {
+      localStorage.setItem('selectedHexes', JSON.stringify(Array.from(selectedHexes)))
+    } catch {}
+  }, [selectedHexes])
+
+  const updateHexes = useCallback(() => {
+    if (!mapRef.current) return
+    const map = mapRef.current.getMap()
+    const bounds = map.getBounds()
+    const hexes = getViewportHexagons({
+      north: bounds.getNorth(),
+      south: bounds.getSouth(),
+      east: bounds.getEast(),
+      west: bounds.getWest(),
+    })
+    setHexIds(hexes)
   }, [])
 
   const handleMapClick = useCallback((e: any) => {
@@ -162,17 +166,6 @@ export default function RainMap() {
     setHexWeather(prev => { const n = { ...prev }; delete n[hexId]; return n })
   }, [])
 
-  // Fetch weather for restored hexes once fetchWeather is ready
-  useEffect(() => {
-    if (selectedHexes.size === 0) return
-    selectedHexes.forEach(hexId => {
-      if (!hexWeather[hexId]) {
-        const [lat, lon] = cellToLatLng(hexId)
-        fetchWeather(hexId, lat, lon)
-      }
-    })
-  }, [fetchWeather]) // eslint-disable-line react-hooks/exhaustive-deps
-
   const geoJSON = hexesToGeoJSON(hexIds, selectedHexes)
 
   const selectedCentroids = Array.from(selectedHexes).map(id => {
@@ -193,7 +186,7 @@ export default function RainMap() {
         initialViewState={{
           longitude: location!.lon,
           latitude: location!.lat,
-          zoom: location!.city === 'United States' ? 4 : 10,
+          zoom: 11,
         }}
         style={{ width: '100%', height: '100%' }}
         mapStyle="https://tiles.openfreemap.org/styles/dark"
