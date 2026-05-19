@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@mapbox/mapbox-gl-draw": "^1.5.1",
+    "@vercel/analytics": "^2.0.1",
     "h3-js": "^4.4.0",
     "maplibre-gl": "^5.24.0",
     "next": "16.2.6",
