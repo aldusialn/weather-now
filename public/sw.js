@@ -19,7 +19,6 @@ self.addEventListener('activate', (event) => {
 })
 
 self.addEventListener('fetch', (event) => {
-  // Only cache GET requests, never API calls
   if (event.request.method !== 'GET') return
   if (event.request.url.includes('/api/')) return
 
@@ -31,5 +30,29 @@ self.addEventListener('fetch', (event) => {
         return response
       })
       .catch(() => caches.match(event.request))
+  )
+})
+
+// Handle push notifications
+self.addEventListener('push', (event) => {
+  if (!event.data) return
+  const { title, body } = event.data.json()
+  event.waitUntil(
+    self.registration.showNotification(title, {
+      body,
+      icon: '/icon-192.png',
+      badge: '/icon-192.png',
+    })
+  )
+})
+
+// Handle notification click — open the app
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close()
+  event.waitUntil(
+    clients.matchAll({ type: 'window' }).then(clientList => {
+      if (clientList.length > 0) return clientList[0].focus()
+      return clients.openWindow('/')
+    })
   )
 })

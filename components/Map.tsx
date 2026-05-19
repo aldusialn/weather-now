@@ -21,6 +21,15 @@ interface HexWeather {
 const H3_RESOLUTION = 7
 const MAX_SELECTED = 5
 
+function getOrCreateUUID(): string {
+  let uuid = localStorage.getItem('uuid')
+  if (!uuid) {
+    uuid = crypto.randomUUID()
+    localStorage.setItem('uuid', uuid)
+  }
+  return uuid
+}
+
 function getViewportHexagons(bounds: {
   north: number
   south: number
@@ -65,12 +74,21 @@ function hexesToGeoJSON(
 
 export default function RainMap() {
   const mapRef = useRef<any>(null)
+  const uuidRef = useRef<string>('')
   const [location, setLocation] = useState<UserLocation | null>(null)
   const [loading, setLoading] = useState(true)
   const [hexIds, setHexIds] = useState<string[]>([])
   const [selectedHexes, setSelectedHexes] = useState<Set<string>>(new Set())
   const [hexWeather, setHexWeather] = useState<Record<string, HexWeather>>({})
   const [limitWarning, setLimitWarning] = useState(false)
+  const [notifStatus, setNotifStatus] = useState<'idle' | 'granted' | 'denied'>('idle')
+
+  // Init UUID
+  useEffect(() => {
+    uuidRef.current = getOrCreateUUID()
+    if (Notification.permission === 'granted') setNotifStatus('granted')
+    if (Notification.permission === 'denied') setNotifStatus('denied')
+  }, [])
 
   useEffect(() => {
     fetch('/api/location')
@@ -84,7 +102,6 @@ export default function RainMap() {
       ...prev,
       [hexId]: { hexId, loading: true, error: false, intervals: [] }
     }))
-
     try {
       const res = await fetch(`/api/nowcast?lat=${lat}&lon=${lon}`)
       const data = await res.json()
@@ -115,12 +132,49 @@ export default function RainMap() {
     } catch {}
   }, [fetchWeather])
 
-  // Save to localStorage whenever selection changes
+  // Save to localStorage and sync to Redis whenever selection changes
   useEffect(() => {
     try {
-      localStorage.setItem('selectedHexes', JSON.stringify(Array.from(selectedHexes)))
+      const hexArray = Array.from(selectedHexes)
+      localStorage.setItem('selectedHexes', JSON.stringify(hexArray))
+      if (uuidRef.current) {
+        fetch('/api/user/sync', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ uuid: uuidRef.current, hexIds: hexArray }),
+        }).catch(() => {})
+      }
     } catch {}
   }, [selectedHexes])
+
+  const enableNotifications = useCallback(async () => {
+    if (!('Notification' in window) || !('serviceWorker' in navigator)) return
+
+    const permission = await Notification.requestPermission()
+    if (permission !== 'granted') {
+      setNotifStatus('denied')
+      return
+    }
+
+    setNotifStatus('granted')
+
+    try {
+      const reg = await navigator.serviceWorker.ready
+      const existing = await reg.pushManager.getSubscription()
+      const subscription = existing ?? await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY!,
+      })
+
+      await fetch('/api/user/subscribe', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ uuid: uuidRef.current, subscription }),
+      })
+    } catch (err) {
+      console.error('Push subscription failed', err)
+    }
+  }, [])
 
   const updateHexes = useCallback(() => {
     if (!mapRef.current) return
@@ -146,13 +200,11 @@ export default function RainMap() {
         setHexWeather(pw => { const n = { ...pw }; delete n[hexId]; return n })
         return next
       }
-
       if (prev.size >= MAX_SELECTED) {
         setLimitWarning(true)
         setTimeout(() => setLimitWarning(false), 2000)
         return prev
       }
-
       const next = new Set(prev)
       next.add(hexId)
       const [hLat, hLon] = cellToLatLng(hexId)
@@ -202,11 +254,7 @@ export default function RainMap() {
             id="hex-fill"
             type="fill"
             paint={{
-              'fill-color': [
-                'case',
-                ['==', ['get', 'selected'], true], '#3b82f6',
-                'transparent'
-              ],
+              'fill-color': ['case', ['==', ['get', 'selected'], true], '#3b82f6', 'transparent'],
               'fill-opacity': 0.35,
             }}
           />
@@ -214,11 +262,7 @@ export default function RainMap() {
             id="hex-stroke"
             type="line"
             paint={{
-              'line-color': [
-                'case',
-                ['==', ['get', 'selected'], true], '#60a5fa',
-                'rgba(255,255,255,0.08)'
-              ],
+              'line-color': ['case', ['==', ['get', 'selected'], true], '#60a5fa', 'rgba(255,255,255,0.08)'],
               'line-width': 1,
             }}
           />
@@ -227,16 +271,9 @@ export default function RainMap() {
 
       {limitWarning && (
         <div style={{
-          position: 'absolute',
-          top: 16,
-          left: '50%',
-          transform: 'translateX(-50%)',
-          background: 'rgba(239,68,68,0.9)',
-          color: 'white',
-          padding: '8px 16px',
-          borderRadius: 8,
-          fontSize: 13,
-          zIndex: 20,
+          position: 'absolute', top: 16, left: '50%', transform: 'translateX(-50%)',
+          background: 'rgba(239,68,68,0.9)', color: 'white', padding: '8px 16px',
+          borderRadius: 8, fontSize: 13, zIndex: 20,
         }}>
           Max {MAX_SELECTED} zones allowed
         </div>
@@ -244,15 +281,9 @@ export default function RainMap() {
 
       {selectedCentroids.length === 0 && (
         <div style={{
-          position: 'absolute',
-          bottom: 16,
-          left: 16,
-          background: 'rgba(0,0,0,0.7)',
-          color: 'rgba(255,255,255,0.5)',
-          padding: '8px 14px',
-          borderRadius: 8,
-          fontSize: 12,
-          zIndex: 10,
+          position: 'absolute', bottom: 16, left: 16,
+          background: 'rgba(0,0,0,0.7)', color: 'rgba(255,255,255,0.5)',
+          padding: '8px 14px', borderRadius: 8, fontSize: 12, zIndex: 10,
         }}>
           Zoom in and click hexagons to select zones
         </div>
@@ -260,25 +291,34 @@ export default function RainMap() {
 
       {selectedCentroids.length > 0 && (
         <div style={{
-          position: 'absolute',
-          bottom: 16,
-          left: 16,
-          background: 'rgba(0,0,0,0.85)',
-          color: 'white',
-          padding: '12px 16px',
-          borderRadius: 10,
-          fontSize: 13,
-          display: 'flex',
-          flexDirection: 'column',
-          gap: 8,
-          zIndex: 10,
-          maxWidth: 300,
-          maxHeight: '60vh',
-          overflowY: 'auto',
+          position: 'absolute', bottom: 16, left: 16,
+          background: 'rgba(0,0,0,0.85)', color: 'white',
+          padding: '12px 16px', borderRadius: 10, fontSize: 13,
+          display: 'flex', flexDirection: 'column', gap: 8,
+          zIndex: 10, maxWidth: 300, maxHeight: '60vh', overflowY: 'auto',
         }}>
-          <span style={{ color: 'rgba(255,255,255,0.4)', fontSize: 11 }}>
-            {selectedCentroids.length}/{MAX_SELECTED} zones selected
-          </span>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span style={{ color: 'rgba(255,255,255,0.4)', fontSize: 11 }}>
+              {selectedCentroids.length}/{MAX_SELECTED} zones selected
+            </span>
+            {notifStatus === 'idle' && (
+              <button
+                onClick={enableNotifications}
+                style={{
+                  background: '#3b82f6', color: 'white', border: 'none',
+                  padding: '4px 10px', borderRadius: 6, fontSize: 11, cursor: 'pointer',
+                }}
+              >
+                🔔 Notify me
+              </button>
+            )}
+            {notifStatus === 'granted' && (
+              <span style={{ color: '#4ade80', fontSize: 11 }}>🔔 Notifications on</span>
+            )}
+            {notifStatus === 'denied' && (
+              <span style={{ color: '#f87171', fontSize: 11 }}>🔕 Blocked</span>
+            )}
+          </div>
 
           {selectedCentroids.map((c, i) => {
             const wx = hexWeather[c.id]
@@ -290,7 +330,7 @@ export default function RainMap() {
             return (
               <div key={c.id} style={{
                 borderTop: i > 0 ? '1px solid rgba(255,255,255,0.1)' : 'none',
-                paddingTop: i > 0 ? 8 : 0
+                paddingTop: i > 0 ? 8 : 0,
               }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
                   <span style={{ fontWeight: 600 }}>Zone {i + 1}</span>
@@ -302,13 +342,8 @@ export default function RainMap() {
                   </button>
                 </div>
 
-                {wx?.loading && (
-                  <div style={{ color: 'rgba(255,255,255,0.4)', fontSize: 12 }}>Fetching...</div>
-                )}
-
-                {wx?.error && (
-                  <div style={{ color: '#f87171', fontSize: 12 }}>Failed to load</div>
-                )}
+                {wx?.loading && <div style={{ color: 'rgba(255,255,255,0.4)', fontSize: 12 }}>Fetching...</div>}
+                {wx?.error && <div style={{ color: '#f87171', fontSize: 12 }}>Failed to load</div>}
 
                 {wx && !wx.loading && !wx.error && (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
