@@ -79,6 +79,24 @@ export default function RainMap() {
       .catch(() => { setLocation({ lat: 39.5, lon: -98.35, city: 'United States' }); setLoading(false) })
   }, [])
 
+  // Load from localStorage on mount
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('selectedHexes')
+      if (saved) {
+        const parsed: string[] = JSON.parse(saved)
+        setSelectedHexes(new Set(parsed))
+      }
+    } catch {}
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Save to localStorage whenever selection changes
+  useEffect(() => {
+    try {
+      localStorage.setItem('selectedHexes', JSON.stringify(Array.from(selectedHexes)))
+    } catch {}
+  }, [selectedHexes])
+
   const updateHexes = useCallback(() => {
     if (!mapRef.current) return
     const map = mapRef.current.getMap()
@@ -144,6 +162,17 @@ export default function RainMap() {
     setHexWeather(prev => { const n = { ...prev }; delete n[hexId]; return n })
   }, [])
 
+  // Fetch weather for restored hexes once fetchWeather is ready
+  useEffect(() => {
+    if (selectedHexes.size === 0) return
+    selectedHexes.forEach(hexId => {
+      if (!hexWeather[hexId]) {
+        const [lat, lon] = cellToLatLng(hexId)
+        fetchWeather(hexId, lat, lon)
+      }
+    })
+  }, [fetchWeather]) // eslint-disable-line react-hooks/exhaustive-deps
+
   const geoJSON = hexesToGeoJSON(hexIds, selectedHexes)
 
   const selectedCentroids = Array.from(selectedHexes).map(id => {
@@ -203,7 +232,6 @@ export default function RainMap() {
         </Source>
       </Map>
 
-      {/* Limit warning */}
       {limitWarning && (
         <div style={{
           position: 'absolute',
@@ -221,7 +249,6 @@ export default function RainMap() {
         </div>
       )}
 
-      {/* Hint when nothing selected */}
       {selectedCentroids.length === 0 && (
         <div style={{
           position: 'absolute',
@@ -238,7 +265,6 @@ export default function RainMap() {
         </div>
       )}
 
-      {/* Selected zones panel */}
       {selectedCentroids.length > 0 && (
         <div style={{
           position: 'absolute',
