@@ -10,7 +10,13 @@ export async function POST(req: NextRequest) {
   const { uuid, hexIds } = await req.json()
   if (!uuid || !hexIds) return NextResponse.json({ error: 'missing fields' }, { status: 400 })
 
-  await redis.set(`user:${uuid}:hexes`, JSON.stringify(hexIds), { ex: 60 * 60 * 24 * 30 })
+  const TTL = 60 * 60 * 24 * 30
+
+  await Promise.all([
+    redis.set(`user:${uuid}:hexes`, JSON.stringify(hexIds), { ex: TTL }),
+    redis.set(`user:${uuid}:lastSeen`, Date.now().toString(), { ex: TTL }),
+    redis.sadd('users', uuid),
+  ])
 
   return NextResponse.json({ ok: true })
 }

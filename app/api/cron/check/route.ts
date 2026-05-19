@@ -26,6 +26,15 @@ async function getWeather(lat: number, lon: number) {
   }))
 }
 
+async function deleteUser(uuid: string) {
+  await Promise.all([
+    redis.del(`user:${uuid}:hexes`),
+    redis.del(`user:${uuid}:sub`),
+    redis.del(`user:${uuid}:lastSeen`),
+    redis.srem('users', uuid),
+  ])
+}
+
 export async function GET(req: NextRequest) {
   const isVercel = req.headers.get('x-vercel-cron') === '1'
   const isManual = req.headers.get('authorization') === `Bearer ${process.env.CRON_SECRET}`
@@ -35,19 +44,37 @@ export async function GET(req: NextRequest) {
   }
 
   const uuids = await redis.smembers('users')
+  const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000
+  const now = Date.now()
+
+  let cleaned = 0
+  let notified = 0
 
   for (const uuid of uuids) {
-    const [hexesRaw, subRaw] = await Promise.all([
+    const [hexesRaw, subRaw, lastSeenRaw] = await Promise.all([
       redis.get(`user:${uuid}:hexes`),
       redis.get(`user:${uuid}:sub`),
+      redis.get(`user:${uuid}:lastSeen`),
     ])
 
-    if (!hexesRaw || !subRaw) continue
+    // Delete if no hexes, no subscription, or inactive for 30 days
+    const lastSeen = lastSeenRaw ? parseInt(lastSeenRaw as string) : 0
+    const inactive = now - lastSeen > THIRTY_DAYS_MS
+
+    if (!hexesRaw || !subRaw || inactive) {
+      await deleteUser(uuid)
+      cleaned++
+      continue
+    }
 
     const hexIds: string[] = typeof hexesRaw === 'string' ? JSON.parse(hexesRaw) : hexesRaw as string[]
     const subscription = typeof subRaw === 'string' ? JSON.parse(subRaw) : subRaw
 
-    if (!hexIds.length) continue
+    if (!hexIds.length) {
+      await deleteUser(uuid)
+      cleaned++
+      continue
+    }
 
     let rainyCount = 0
     for (const hexId of hexIds) {
@@ -67,14 +94,14 @@ export async function GET(req: NextRequest) {
           body: `Rain likely in ${rainyCount}/${hexIds.length} of your zones in the next 2 hours`,
         })
       )
+      notified++
     } catch (err: any) {
       if (err.statusCode === 410) {
-        await redis.del(`user:${uuid}:sub`)
-        await redis.del(`user:${uuid}:hexes`)
-        await redis.srem('users', uuid)
+        await deleteUser(uuid)
+        cleaned++
       }
     }
   }
 
-  return NextResponse.json({ ok: true })
+  return NextResponse.json({ ok: true, cleaned, notified, total: uuids.length })
 }
